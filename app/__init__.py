@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .agent import app
+from .agent import app, root_agent
+from .api import GlobetrotterClient, run_agent_query
 
-__all__ = ["app"]
+__all__ = ["app", "root_agent", "GlobetrotterClient", "run_agent_query"]

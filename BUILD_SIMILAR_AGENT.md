@@ -1,6 +1,6 @@
 # Build with Gemini · Track 3 — Complete Agent Architecture & Blueprint Guide
 
-This guide provides an end-to-end blueprint for building, testing, documenting, and deploying production AI agents using **Google Agent Development Kit (ADK)**, **Vertex AI Agent Runtime**, **A2UI**, **FastAPI**, and **Cloud Run**.
+This guide provides an end-to-end blueprint for building, testing, documenting, and deploying production AI agents using **Google Agent Development Kit (ADK)**, **Vertex AI Agent Runtime**, **A2UI**, **FastAPI**, **Cloud Run**, and publishing as a **Public Python Library**.
 
 ---
 
@@ -8,10 +8,10 @@ This guide provides an end-to-end blueprint for building, testing, documenting, 
 
 ```mermaid
 graph TD
-    subgraph ClientLayer ["Client Layer"]
+    subgraph ClientLayer ["Client Layer & SDK Interfaces"]
         UI["Web Browser Interface<br/>(HTML/CSS/JS Chat UI)"]
         Chips["Prompt Chips & Preferences Modal"]
-        A2UIRenderer["Built-in A2UI Card Renderer"]
+        PythonSDK["Python Library SDK<br/>(from app import GlobetrotterClient)"]
     end
 
     subgraph ProxyLayer ["Cloud Run Proxy (FastAPI + Swagger)"]
@@ -36,8 +36,8 @@ graph TD
     end
 
     UI -->|POST /chat| ChatEndpoint
+    PythonSDK -->|Import Library API| RootAgent
     Chips --> UI
-    A2UIRenderer --> UI
     FastAPI --- Swagger
     FastAPI --- HealthEndpoint
     FastAPI --- ChatEndpoint
@@ -53,39 +53,42 @@ graph TD
 
 ---
 
-## 🔄 End-to-End Sequence Flow Diagram
+## 🐍 Public Python Library API (`app/api.py`)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as Traveler (Browser)
-    participant Proxy as FastAPI Proxy (Cloud Run)
-    participant A2A as A2A SDK Client
-    participant Runtime as Vertex AI Agent Runtime
-    participant Agent as ADK Root Agent
-    participant Tools as Agent Tools (GCS / Firestore / Omni)
+The agent can be imported and executed directly in Python applications as a reusable library:
 
-    User->>Proxy: POST /chat {"message": "Generate Bali video & search packages"}
-    Proxy->>A2A: Authenticate ADC & resolve AgentCard (.well-known)
-    A2A->>Runtime: send_message(Message, context_id)
-    Runtime->>Agent: Process prompt & invoke tools
-    
-    par Query Firestore Database
-        Agent->>Tools: search_travel_packages("Bali")
-        Tools-->>Agent: Returns catalog package records
-    and Generate Omni Video
-        Agent->>Tools: generate_destination_video("Bali beach resort")
-        Tools->>Tools: Call gemini-omni-flash-preview (location=global)
-        Tools->>Tools: Upload MP4 bytes to Cloud Storage
-        Tools-->>Agent: Returns public HTTPS video URL
-    end
+### 1. Installation
+Install locally or build a wheel package:
+```bash
+pip install .
+```
 
-    Agent->>Agent: Format output into A2UI v0.8 card JSON
-    Agent-->>Runtime: Emit TaskArtifactUpdateEvent
-    Runtime-->>A2A: A2A Event Stream
-    A2A-->>Proxy: Extract text & a2ui data parts
-    Proxy-->>User: JSON Response {"parts": [{"kind": "text"}, {"kind": "a2ui"}]}
-    User->>User: Render text bubble & A2UI video/package card
+### 2. Synchronous Usage
+```python
+from app import run_agent_query, GlobetrotterClient
+
+# Functional Quick API
+res = run_agent_query("Calculate a 7-day travel budget for Tokyo in JPY and EUR")
+print(res["text"])
+
+# Client Class API
+client = GlobetrotterClient(user_id="python-app-user")
+print(client.list_available_tools())
+res = client.query("Search packages for Bali beach getaway")
+print(res["text"])
+```
+
+### 3. Asynchronous Usage
+```python
+import asyncio
+from app import GlobetrotterClient
+
+async def main():
+    client = GlobetrotterClient(user_id="async-service")
+    res = await client.async_query("Generate a preview video for a Kyoto tea ceremony")
+    print(res["text"])
+
+asyncio.run(main())
 ```
 
 ---
@@ -121,79 +124,31 @@ The FastAPI proxy server exposes interactive OpenAPI/Swagger documentation out o
   "user_id": "web-user-123"
 }
 ```
-* **Response Payload (`200 OK`)**:
-```json
-{
-  "parts": [
-    {
-      "kind": "text",
-      "text": "Here are the top travel packages matching your search:"
-    },
-    {
-      "kind": "a2ui",
-      "data": {
-        "surfaceUpdate": {
-          "components": [
-            {
-              "card": {
-                "title": "Tokyo Cultural Discovery",
-                "description": "7 days exploring Shibuya, Asakusa, and Mt. Fuji. Price: $2,499."
-              }
-            }
-          ]
-        }
-      }
-    }
-  ]
-}
-```
 
 ---
 
 ## 🧪 Comprehensive Testing Suite
 
-### 1. Unit Tests (`tests/unit/test_video_tools.py`)
+### 1. Library API Unit Tests (`tests/unit/test_api.py`)
 ```python
 import pytest
-from unittest.mock import MagicMock, patch
-from app.video_tools import generate_destination_video
+from app import GlobetrotterClient, run_agent_query
 
-@patch("app.video_tools.genai.Client")
-@patch("app.video_tools.storage.Client")
-def test_generate_destination_video(mock_storage, mock_genai):
-    mock_interactions = MagicMock()
-    mock_genai.return_value.interactions = mock_interactions
-    
-    # Mock video generation response
-    mock_response = MagicMock()
-    mock_response.output_video.data = b"fake_mp4_bytes"
-    mock_interactions.create.return_value = mock_response
+def test_globetrotter_client_tools_list():
+    client = GlobetrotterClient()
+    tools = client.list_available_tools()
+    assert "search_travel_packages" in tools
 
-    # Mock GCS upload
-    mock_bucket = MagicMock()
-    mock_storage.return_value.bucket.return_value = mock_bucket
-
-    url = generate_destination_video("Bali sunset")
-    
-    assert "https://storage.googleapis.com/" in url
-    mock_interactions.create.assert_called_once_with(
-        model="gemini-omni-flash-preview", input="Bali sunset"
-    )
+@pytest.mark.asyncio
+async def test_async_query():
+    client = GlobetrotterClient(user_id="test-user")
+    res = await client.async_query("What to visit in Tokyo?")
+    assert res["status"] == "success"
 ```
 
-### 2. Integration Tests (`tests/integration/test_agent.py`)
-```python
-import pytest
-from app.agent import root_agent
-
-def test_root_agent_initialization():
-    assert root_agent.name == "root_agent"
-    assert len(root_agent.tools) > 0
-```
-
-### 3. Run All Tests
+### 2. Run All Unit & API Tests
 ```bash
-pytest tests/unit/ tests/integration/ -v
+./.venv/bin/pytest tests/unit/ -v
 ```
 
 ---
