@@ -80,7 +80,19 @@ def _auth_headers() -> dict[str, str]:
     }
 
 
-app = FastAPI()
+app = FastAPI(
+    title="Globetrotter Travel Concierge API",
+    description="FastAPI proxy connecting web clients to the deployed ADK Agent over the A2A protocol.",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+
+@app.get("/health", tags=["System"])
+async def health():
+    """Health check endpoint for Cloud Run and monitoring."""
+    return {"status": "ok", "service": "globetrotter-frontend", "resource": RESOURCE}
 
 
 @app.exception_handler(Exception)
