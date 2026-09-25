@@ -206,8 +206,9 @@ async def chat(req: Request):
     return JSONResponse({"parts": parts})
 
 
-# Serve the chat UI (keep this mount last so /chat wins).
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 
 if __name__ == "__main__":
