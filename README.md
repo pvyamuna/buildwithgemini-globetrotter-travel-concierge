@@ -6,34 +6,6 @@ An intelligent AI Travel Concierge application built on Google Cloud's **Agent D
 
 ---
 
-## ⚙️ Environment Configuration (`dev` vs `live`)
-
-Globetrotter maintains strict separation between **`dev`** (Sandbox & Local Testing) and **`live`** (Production Cloud Deployment):
-
-| Configuration Variable | Development / Sandbox (`dev`) | Production / Deployed (`live`) |
-| :--- | :--- | :--- |
-| `APP_ENV` | `dev` | `live` |
-| `GOOGLE_CLOUD_PROJECT` | Local Dev GCP Project ID | Production GCP Project ID |
-| `GCS_BUCKET_NAME` | `globetrotter-travel-media-dev` | `globetrotter-travel-media-prod` |
-| `MEMORY_BANK_ID` | Sandbox / Dev Memory Bank ID | Deployed Reasoning Engine ID |
-| `AGENT_ENGINE_RESOURCE_NAME` | Local / Sandbox ADK Web URL | Deployed Vertex AI Reasoning Engine Resource Name |
-| `USE_CODE_SANDBOX` | `true` | `true` |
-
-### Environment Files
-* `.env.dev`: Local sandbox development environment.
-* `.env.prod`: Production live environment configuration.
-
-To switch environments locally, set `APP_ENV`:
-```bash
-# Activate dev environment
-export APP_ENV=dev
-
-# Activate live environment
-export APP_ENV=live
-```
-
----
-
 ## 🏛️ System Architecture
 
 Globetrotter connects a responsive web chat UI to a deployed ADK Agent Runtime over Google's A2A protocol, augmented with enterprise GCP data services and GenAI models:
@@ -61,55 +33,67 @@ Globetrotter connects a responsive web chat UI to a deployed ADK Agent Runtime o
 
 ---
 
-## 🔄 End-to-End Environment Lifecycle: Build, Test, Deploy
+## ⚙️ 1. Configuration System (`app/config.py`)
 
-### 1. Build Phase
-Build python wheel packages or container images for deployment:
+Globetrotter maintains strict separation between **`dev`** (Sandbox & Local Testing) and **`live`** (Production Cloud Deployment):
+
+| Configuration Variable | Development / Sandbox (`dev`) | Production / Deployed (`live`) |
+| :--- | :--- | :--- |
+| `APP_ENV` | `dev` | `live` |
+| `GOOGLE_CLOUD_PROJECT` | Local Dev GCP Project ID | Production GCP Project ID |
+| `GCS_BUCKET_NAME` | `globetrotter-travel-media-dev` | `globetrotter-travel-media-prod` |
+| `MEMORY_BANK_ID` | Sandbox / Dev Memory Bank ID | Deployed Reasoning Engine ID |
+| `AGENT_ENGINE_RESOURCE_NAME` | Local / Sandbox ADK Web URL | Deployed Vertex AI Reasoning Engine Resource Name |
+| `USE_CODE_SANDBOX` | `true` | `true` |
+
+### Environment Configuration Files
+* **`.env.dev`**: Local sandbox development configuration.
+* **`.env.prod`**: Production live configuration.
+
+To switch environment profiles locally:
 ```bash
-# Build Python library wheel package
-python -m pip install --upgrade build
-python -m build
+# Activate dev environment
+export APP_ENV=dev
 
-# Build Cloud Run frontend container locally (optional)
-docker build -t globetrotter-frontend:latest -f frontend/Dockerfile .
-```
-
-### 2. Test Phase
-Run unit tests, API contract tests, and integration tests across environments:
-```bash
-# Run unit and contract tests in dev environment
-APP_ENV=dev ./.venv/bin/pytest tests/unit/ tests/contract/ -v
-
-# Run integration tests against sandbox/agent
-APP_ENV=dev ./.venv/bin/pytest tests/integration/ -v
-```
-
-### 3. Deploy Phase
-
-#### A. Deploy Agent Runtime (`live`)
-Deploy the ADK Agent to Vertex AI Reasoning Engine:
-```bash
-APP_ENV=live agents-cli deploy agent-engine \
-  --project YOUR_PROJECT_ID \
-  --region us-central1
-```
-
-#### B. Deploy Frontend to Cloud Run (`live`)
-Deploy the FastAPI proxy server to Cloud Run:
-```bash
-gcloud run deploy globetrotter-frontend \
-  --source ./frontend \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --set-env-vars="APP_ENV=live,AGENT_ENGINE_RESOURCE_NAME=YOUR_REASONING_ENGINE_RESOURCE_NAME,AGENT_DIRECTORY=app"
+# Activate live environment
+export APP_ENV=live
 ```
 
 ---
 
-## 🐍 Public Python Library API (`app/api.py`)
+## 🎨 2. Frontend Component (`frontend/`)
 
-Globetrotter can be imported and executed as a reusable Python library package in downstream applications:
+The web frontend consists of a lightweight, containerized FastAPI server and a sleek, responsive dialogue interface:
 
+* **File Surface**: `frontend/main.py` & `frontend/static/index.html`
+* **Features**:
+  * **Interactive Prompt Chips**: 3 pre-configured prompt chips (`🌴 Search packages for Tokyo & Bali`, `📸 Preview photos for beach getaway`, `🧮 Calculate 7-day budget in EUR & JPY`).
+  * **Traveler Preferences Modal**: Custom modal overlay allowing users to configure budget tiers, travel styles, and dietary needs.
+  * **Native A2UI Renderer**: Built-in client-side renderer that transforms A2UI JSON output (`Card`, `Column`, `Row`, `Text`, `Image`) into native HTML display cards.
+
+---
+
+## 🤖 3. ADK Agent Component (`app/agent.py`)
+
+The agent backend uses Google ADK and coordinates multiple GenAI models and enterprise tools:
+
+* **Root Agent**: `root_agent` powered by `gemini-flash-latest`.
+* **Integrated Tools**:
+  * `search_travel_packages`, `get_travel_package_details`, `save_travel_package`: Firestore NoSQL database travel package catalog queries.
+  * `generate_destination_image`, `generate_travel_item_image`: Image generation via `gemini-3.1-flash-lite-image` and `imagen-3.0-generate-002`.
+  * `generate_destination_video`: Short destination video generation using Google's Omni model (`gemini-omni-flash-preview`) in region `global`.
+  * `get_currency_exchange_rates`: Real-time foreign exchange rate lookup.
+  * `geocode_address`, `find_nearby_places`: Google Maps geocoding and place discovery tools.
+  * `PreloadMemoryTool`: Vertex AI Memory Bank integration for durable cross-session user memory.
+  * `AgentEngineSandboxCodeExecutor`: Secure Python code sandbox for running calculations.
+
+---
+
+## 🐍 4. Public Python Library & API Component (`app/api.py`)
+
+Globetrotter exports a public Python library SDK and exposes interactive Swagger/OpenAPI documentation:
+
+### Python Library SDK Usage
 ```python
 from app import GlobetrotterClient, run_agent_query
 
@@ -122,25 +106,77 @@ client = GlobetrotterClient(user_id="my-app-user")
 
 # Inspect registered agent tools
 print(client.list_available_tools())
-# -> ['get_weather', 'search_travel_packages', 'generate_destination_image', 'generate_destination_video', ...]
 
 # Synchronous Query
 res = client.query("Search travel packages for Bali beach getaway")
 print(res["text"])
 ```
 
----
-
-## 🌐 OpenAPI / Swagger Interactive Documentation
-
-When running the frontend server or deployed on Cloud Run, interactive API documentation is available at:
-
-* **Swagger UI**: `http://localhost:8080/docs` (or `https://<YOUR_CLOUD_RUN_URL>/docs`)
+### Interactive OpenAPI / Swagger Documentation
+When the server is running, access Swagger UI and ReDoc:
+* **Swagger UI**: `http://localhost:8080/docs`
 * **ReDoc**: `http://localhost:8080/redoc`
 
-### API Endpoints
-* `GET /health`: Health check endpoint for Cloud Run and uptime monitoring.
-* `POST /chat`: Primary chat endpoint forwarding browser queries over A2A protocol to Agent Runtime.
+#### Endpoints
+* `GET /health`: Health check endpoint for Cloud Run container monitoring.
+* `POST /chat`: Primary A2A protocol endpoint forwarding queries to Agent Runtime.
+
+---
+
+## ☁️ 5. Cloud Run Container Deployment
+
+The frontend proxy is containerized and deployed to Google Cloud Run:
+
+### Dockerfile (`frontend/Dockerfile`)
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY frontend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY frontend/ .
+ENV PORT=8080
+EXPOSE 8080
+CMD ["python", "main.py"]
+```
+
+### IAM Permissions & Deployment Commands
+
+```bash
+# 1. Grant Cloud Run Compute SA permissions to invoke Vertex AI Agent Runtime
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:YOUR_PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+# 2. Deploy Frontend to Cloud Run
+gcloud run deploy globetrotter-frontend \
+  --source ./frontend \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars="APP_ENV=live,AGENT_ENGINE_RESOURCE_NAME=YOUR_REASONING_ENGINE_RESOURCE_NAME,AGENT_DIRECTORY=app"
+```
+
+---
+
+## 🔄 Lifecycle: Build, Test, Deploy
+
+### 1. Build
+```bash
+python -m build
+```
+
+### 2. Test
+```bash
+./.venv/bin/pytest tests/unit/ tests/contract/ -v
+```
+
+### 3. Deploy
+```bash
+# Deploy Agent to Agent Platform
+APP_ENV=live agents-cli deploy agent-engine --project YOUR_PROJECT_ID --region us-central1
+
+# Deploy Frontend to Cloud Run
+gcloud run deploy globetrotter-frontend --source ./frontend --region us-central1
+```
 
 ---
 
@@ -164,7 +200,7 @@ globetrotter-travel-concierge/
 │   ├── static/index.html       # Responsive dialogue UI with prompt chips and preferences modal
 │   └── Dockerfile              # Cloud Run container build file
 ├── tests/                      # Comprehensive test suite
-│   ├── unit/                   # Tool and Python library API unit tests
+│   ├── unit/                   # Tool, config, and API unit tests
 │   ├── contract/               # FastAPI & OpenAPI contract tests
 │   └── integration/            # Agent integration tests
 ├── .env.dev                    # Dev/Sandbox environment settings
