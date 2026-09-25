@@ -1,23 +1,40 @@
-# How to Build a Similar AI Agent with Google ADK
+# How to Build, Test, and Deploy an AI Agent with Cloud Run Frontend
 
-This guide explains step-by-step how to build a production-grade AI agent similar to **Globetrotter Travel Concierge** using the **Google Agent Development Kit (ADK)**, **Vertex AI**, **Firestore**, **GCS**, **A2UI**, and **Cloud Run**.
+This guide provides a comprehensive step-by-step walkthrough to **build, test, deploy, and wire up** a production AI agent using **Google Agent Development Kit (ADK)**, **Vertex AI Agent Runtime**, and a **FastAPI Cloud Run frontend**.
 
 ---
 
 ## 🛠️ Architecture Overview
 
-A complete ADK agent application consists of three main layers:
+The system architecture consists of two decoupled services connected over Google's **A2A (Agent-to-Agent)** protocol:
 
-1. **ADK Agent Runtime**: The core Python agent defining system instructions, tools, Vertex AI Memory Bank integration, code execution sandbox, and A2UI card callbacks.
-2. **FastAPI Proxy**: A lightweight server that connects web browsers to the agent's **A2A (Agent-to-Agent)** protocol endpoint on Vertex AI Reasoning Engine.
-3. **Web Frontend**: A responsive HTML/CSS/JS chat interface rendering plain-text responses, prompt chips, dialogue modals, and A2UI cards.
+```
+┌─────────────────────────┐          HTTP POST /chat          ┌───────────────────────────┐
+│   Web Browser Client    │ ─────────────────────────────────► │  Cloud Run Frontend Proxy │
+│ (Prompt Chips & Modal)  │ ◄───────────────────────────────── │   (FastAPI + A2A SDK)     │
+└─────────────────────────┘      JSON {parts:[text, a2ui]}    └─────────────┬─────────────┘
+                                                                            │
+                                                                 A2A Protocol / gRPC
+                                                                            │
+                                                                            ▼
+                                                              ┌───────────────────────────┐
+                                                              │ Vertex AI Agent Runtime   │
+                                                              │ (ADK Agent + Reasoning)   │
+                                                              └─────────────┬─────────────┘
+                                                                            │
+                                            ┌───────────────────────────────┼───────────────────────────────┐
+                                            ▼                               ▼                               ▼
+                                  ┌───────────────────┐           ┌───────────────────┐           ┌───────────────────┐
+                                  │ Vertex Memory Bank│           │ Firestore Catalog │           │ GCS Media Bucket  │
+                                  └───────────────────┘           └───────────────────┘           └───────────────────┘
+```
 
 ---
 
-## 📋 Step-by-Step Implementation Guide
+## 📋 Step 1: Scaffold & Build the Agent
 
-### Step 1: Scaffold a New Agent Project
-Initialize a fresh ADK agent project using `agents-cli`:
+### 1. Scaffold Project
+Create a new ADK project targeting Vertex AI Agent Runtime:
 
 ```bash
 agents-cli scaffold create \
@@ -26,85 +43,30 @@ agents-cli scaffold create \
   --deployment-target agent_runtime
 ```
 
----
-
-### Step 2: Define Custom Tools & Integrations
-
-#### 1. Firestore Database Catalog Tools
-Create tools for searching or persisting data in Cloud Firestore (`app/firestore_tools.py`):
+### 2. Configure Agent & Tools (`app/agent.py`)
+Register custom tools, Vertex AI Memory Bank, and A2UI schema manager:
 
 ```python
-from google.cloud import firestore
-
-db = firestore.Client(project="YOUR_PROJECT_ID")
-
-def search_catalog(query: str) -> list[dict]:
-    """Searches catalog items in Firestore.
-    
-    Args:
-        query: Search term or keyword.
-    """
-    docs = db.collection("items").limit(5).stream()
-    return [doc.to_dict() for doc in docs]
-```
-
-#### 2. Generative Media Tools (Imagen & Gemini Omni Video)
-Create visual tools that generate images or short video clips and upload bytes to Cloud Storage (`app/media_tools.py`):
-
-```python
-import uuid
-from google import genai
-from google.cloud import storage
-
-def generate_item_photo(prompt: str) -> str:
-    """Generates a photo for an item and uploads it to Cloud Storage."""
-    client = genai.Client(vertexai=True, project="YOUR_PROJECT_ID", location="us-central1")
-    res = client.models.generate_images(
-        model="imagen-3.0-generate-002",
-        prompt=prompt,
-        config=dict(number_of_images=1, output_mime_type="image/jpeg"),
-    )
-    image_bytes = res.generated_images[0].image.image_bytes
-    
-    # Upload bytes to Cloud Storage
-    filename = f"media_{uuid.uuid4().hex[:8]}.jpg"
-    storage_client = storage.Client(project="YOUR_PROJECT_ID")
-    blob = storage_client.bucket("YOUR_BUCKET_NAME").blob(filename)
-    blob.upload_from_string(image_bytes, content_type="image/jpeg")
-    
-    return f"https://storage.googleapis.com/YOUR_BUCKET_NAME/{filename}"
-```
-
-#### 3. Vertex AI Memory Bank Integration
-Enable cross-session memory in `app/agent.py`:
-
-```python
+from google.adk import Agent, App
 from google.adk.memory import VertexAiMemoryBankService
 from google.adk.tools import PreloadMemoryTool
+from google.genai import types
+from a2ui.basic_catalog.provider import BasicCatalog
+from a2ui.schema.manager import A2uiSchemaManager
 
+# A2UI Card Schema Manager
+schema_manager = A2uiSchemaManager(
+    version="0.8",
+    catalogs=[BasicCatalog.get_config("0.8")],
+)
+
+# Memory Bank Service
 def memory_bank_service_builder():
     return VertexAiMemoryBankService(
         project="YOUR_PROJECT_ID",
         location="us-central1",
         agent_engine_id="YOUR_MEMORY_BANK_ID",
     )
-```
-
----
-
-### Step 3: Wire the Agent with A2UI Card Callbacks
-Register tools, Memory Bank, and A2UI schema manager in `app/agent.py`:
-
-```python
-from google.adk import Agent, App
-from google.genai import types
-from a2ui.basic_catalog.provider import BasicCatalog
-from a2ui.schema.manager import A2uiSchemaManager
-
-schema_manager = A2uiSchemaManager(
-    version="0.8",
-    catalogs=[BasicCatalog.get_config("0.8")],
-)
 
 root_agent = Agent(
     name="root_agent",
@@ -113,6 +75,7 @@ root_agent = Agent(
     tools=[
         search_catalog,
         generate_item_photo,
+        generate_destination_video,
         PreloadMemoryTool(),
     ],
     after_model_callback=a2ui_callback,
@@ -123,33 +86,114 @@ app = App(root_agent=root_agent)
 
 ---
 
-### Step 4: Build & Deploy the FastAPI Proxy Frontend
-The FastAPI proxy translates browser `/chat` requests into A2A protocol calls to Agent Runtime:
+## 🧪 Step 2: Test the Agent Locally
+
+### 1. Run Automated Unit & Integration Tests
+Execute `pytest` to verify tool definitions, memory hooks, and agent callbacks:
+
+```bash
+# Run unit tests
+pytest tests/unit/
+
+# Run integration tests
+pytest tests/integration/
+```
+
+### 2. Test Agent Locally via ADK Web UI
+Launch local ADK web interface to interactively test tools and A2UI card rendering:
+
+```bash
+agents-cli dev web
+```
+
+---
+
+## 🚀 Step 3: Deploy the Agent Runtime (`agents-cli deploy`)
+
+### 1. Deploy Agent to Vertex AI Reasoning Engine
+Publish the ADK agent to Vertex AI Agent Runtime:
+
+```bash
+agents-cli deploy agent-engine \
+  --project YOUR_PROJECT_ID \
+  --region us-central1
+```
+
+After deployment completes, note down the returned Reasoning Engine resource name:
+`projects/YOUR_PROJECT_NUMBER/locations/us-central1/reasoningEngines/YOUR_REASONING_ENGINE_ID`
+
+### 2. Grant IAM Authorization
+Grant the default Cloud Run Compute Service Account permission to invoke Vertex AI Reasoning Engines:
+
+```bash
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:YOUR_PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+```
+
+---
+
+## 🌐 Step 4: Build & Deploy the Cloud Run Frontend
+
+### 1. Pin Dependencies (`frontend/requirements.txt`)
+Ensure `a2a-sdk` is pinned to `0.3.26` to avoid breaking changes during container builds:
+
+```text
+a2a-sdk==0.3.26
+fastapi
+uvicorn
+google-auth
+```
+
+### 2. FastAPI A2A Proxy Server (`frontend/main.py`)
+The proxy uses Google Application Default Credentials (ADC) to authenticate A2A requests:
 
 ```python
-# frontend/main.py
-from fastapi import FastAPI
+import os
+from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 import a2a.client
 
 app = FastAPI()
-# Sends user message to agent A2A endpoint and returns text & A2UI dataparts
+
+AGENT_ENGINE_RESOURCE_NAME = os.environ.get("AGENT_ENGINE_RESOURCE_NAME")
+AGENT_DIRECTORY = os.environ.get("AGENT_DIRECTORY", "app")
+
+@app.post("/chat")
+async def chat(request: dict):
+    user_message = request.get("message")
+    # Fetch agent card via A2A protocol and send user message
+    # Return { "parts": [{ "kind": "text", "text": "..." }, { "kind": "a2ui", "data": [...] }] }
 ```
 
-Deploy frontend to Cloud Run:
+### 3. Deploy Frontend to Cloud Run
+Deploy the FastAPI container to Cloud Run with environment variables pointing to your Agent Runtime ID:
 
 ```bash
 gcloud run deploy my-agent-frontend \
   --source ./frontend \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars AGENT_ENGINE_RESOURCE_NAME="YOUR_AGENT_RESOURCE_NAME",AGENT_DIRECTORY="app"
+  --set-env-vars AGENT_ENGINE_RESOURCE_NAME="projects/YOUR_PROJECT_NUMBER/locations/us-central1/reasoningEngines/YOUR_REASONING_ENGINE_ID",AGENT_DIRECTORY="app"
 ```
 
 ---
 
-## 🧪 Testing Your Agent
-Run automated pytest verification:
+## ✅ Step 5: End-to-End Verification
+
+### 1. Endpoint HTTP Verification
+Test the deployed Cloud Run service URL using `curl`:
 
 ```bash
-pytest tests/unit/
+# Verify chat POST endpoint
+curl -X POST https://<YOUR_CLOUD_RUN_URL>/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello, search travel packages for Tokyo"}'
 ```
+
+### 2. Live Browser Verification
+Open `https://<YOUR_CLOUD_RUN_URL>` in your browser to verify:
+* **Prompt Chips**: Clickable prompt chips trigger instant queries.
+* **Preferences Modal**: Displays durable memory facts retrieved from Vertex AI Memory Bank.
+* **A2UI Cards**: Interactive cards render cleanly without raw JSON artifacts.
+* **Media & Code Execution**: Generates photos/videos and performs live sandbox calculations.
