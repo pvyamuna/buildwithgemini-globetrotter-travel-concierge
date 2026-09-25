@@ -1,12 +1,10 @@
-# How to Build, Test, and Deploy an AI Agent with Cloud Run Frontend
+# Build with Gemini · Track 3 — Complete Agent & Application Development Guide
 
-This guide provides a comprehensive step-by-step walkthrough to **build, test, deploy, and wire up** a production AI agent using **Google Agent Development Kit (ADK)**, **Vertex AI Agent Runtime**, and a **FastAPI Cloud Run frontend**.
+In this guide, you'll learn how to build a complete, production-grade agentic application (**Globetrotter Travel Concierge**) using **Google Agent Development Kit (ADK)**, **Vertex AI Agent Runtime**, **Firestore**, **Cloud Storage**, **Vertex AI Memory Bank**, **Agent Engine Code Sandbox**, **A2UI**, and **Cloud Run**.
 
 ---
 
-## 🛠️ Architecture Overview
-
-The system architecture consists of two decoupled services connected over Google's **A2A (Agent-to-Agent)** protocol:
+## 🧭 Overview & Lab Architecture
 
 ```
 ┌─────────────────────────┐          HTTP POST /chat          ┌───────────────────────────┐
@@ -31,76 +29,28 @@ The system architecture consists of two decoupled services connected over Google
 
 ---
 
-## 📋 Step 1: Scaffold & Build the Agent
+## 1. Environment Setup
 
-### 1. Scaffold Project
-Create a new ADK project targeting Vertex AI Agent Runtime:
+### Starter Repo & Skills
+Setup workspace dependencies, **skills**, and **MCP servers**:
+* **Developer Knowledge MCP**: Grounded access to official Google Cloud, ADK, and Firebase documentation.
+* **Firebase MCP**: Live interaction with Firestore database collections.
+
+---
+
+## 2. Build Your First Agent
+
+Scaffold a complete ADK project targeting Vertex AI Agent Runtime using `agents-cli`:
 
 ```bash
 agents-cli scaffold create \
-  --name my-similar-agent \
+  --name globetrotter-travel-concierge \
   --template adk \
   --deployment-target agent_runtime
 ```
 
-### 2. Configure Agent & Tools (`app/agent.py`)
-Register custom tools, Vertex AI Memory Bank, and A2UI schema manager:
-
-```python
-from google.adk import Agent, App
-from google.adk.memory import VertexAiMemoryBankService
-from google.adk.tools import PreloadMemoryTool
-from google.genai import types
-from a2ui.basic_catalog.provider import BasicCatalog
-from a2ui.schema.manager import A2uiSchemaManager
-
-# A2UI Card Schema Manager
-schema_manager = A2uiSchemaManager(
-    version="0.8",
-    catalogs=[BasicCatalog.get_config("0.8")],
-)
-
-# Memory Bank Service
-def memory_bank_service_builder():
-    return VertexAiMemoryBankService(
-        project="YOUR_PROJECT_ID",
-        location="us-central1",
-        agent_engine_id="YOUR_MEMORY_BANK_ID",
-    )
-
-root_agent = Agent(
-    name="root_agent",
-    model=Gemini(model="gemini-flash-latest"),
-    instruction=schema_manager.generate_system_prompt(...),
-    tools=[
-        search_catalog,
-        generate_item_photo,
-        generate_destination_video,
-        PreloadMemoryTool(),
-    ],
-    after_model_callback=a2ui_callback,
-)
-
-app = App(root_agent=root_agent)
-```
-
----
-
-## 🧪 Step 2: Test the Agent Locally
-
-### 1. Run Automated Unit & Integration Tests
-Execute `pytest` to verify tool definitions, memory hooks, and agent callbacks:
-
-```bash
-# Run unit tests
-pytest tests/unit/
-
-# Run integration tests
-pytest tests/integration/
-```
-
-### 2. Test Agent Locally via ADK Web UI
-Launch local ADK web interface to interactively test tools and A2UI card rendering:
+### Local Testing in ADK Playground
+Launch local ADK dev UI with session tracing:
 
 ```bash
 agents-cli dev web
@@ -108,10 +58,9 @@ agents-cli dev web
 
 ---
 
-## 🚀 Step 3: Deploy the Agent Runtime (`agents-cli deploy`)
+## 3. Initial Deployment to Agent Platform
 
-### 1. Deploy Agent to Vertex AI Reasoning Engine
-Publish the ADK agent to Vertex AI Agent Runtime:
+Deploy the scaffolded agent to Vertex AI Reasoning Engine:
 
 ```bash
 agents-cli deploy agent-engine \
@@ -119,25 +68,168 @@ agents-cli deploy agent-engine \
   --region us-central1
 ```
 
-After deployment completes, note down the returned Reasoning Engine resource name:
+Save the generated Reasoning Engine resource name from `deployment_metadata.json`:
 `projects/YOUR_PROJECT_NUMBER/locations/us-central1/reasoningEngines/YOUR_REASONING_ENGINE_ID`
 
-### 2. Grant IAM Authorization
-Grant the default Cloud Run Compute Service Account permission to invoke Vertex AI Reasoning Engines:
+---
+
+## 4. Add Persistent Storage
+
+### Firestore Database
+Store structured domain records (e.g. travel catalog packages) in Cloud Firestore (`app/firestore_tools.py`):
+
+```python
+from google.cloud import firestore
+
+# Note: Hardcode project ID string for Firestore client on Agent Platform
+db = firestore.Client(project="YOUR_PROJECT_ID")
+
+def search_travel_packages(destination: str) -> list[dict]:
+    """Searches travel packages in Firestore matching a destination keyword."""
+    docs = db.collection("travel_packages").limit(5).stream()
+    return [d.to_dict() for d in docs if destination.lower() in str(d.to_dict()).lower()]
+```
+
+### Cloud Storage (GCS)
+Create a public GCS bucket for hosting generated media (photos, postcard graphics, videos):
 
 ```bash
-gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
-  --member="serviceAccount:YOUR_PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
-  --role="roles/aiplatform.user"
+gcloud storage buckets create gs://globetrotter-travel-media-YOUR_PROJECT_ID \
+  --location=us-central1
 ```
 
 ---
 
-## 🌐 Step 4: Build & Deploy the Cloud Run Frontend
+## 5. Add Tools & Call External APIs
+
+### Function Tools
+Add deterministic tools for currency conversions, geocoding, and local place searches:
+
+* **Live Exchange Rates**: Fetch real-time FX rates from `frankfurter.dev`.
+* **Google Maps Platform**: Geocode addresses via Geocoding API and find nearby attractions via Places API (New).
+
+---
+
+## 6. Generative Media Tools
+
+### Image Generation (`imagen-3.0-generate-002` / `gemini-3.1-flash-lite-image`)
+Generate destination images, save artifacts for Playground inspection, and upload bytes to Cloud Storage (`app/image_tools.py`):
+
+```python
+import uuid
+from google import genai
+from google.cloud import storage
+
+def generate_destination_image(prompt: str, tool_context=None) -> str:
+    """Generates a destination preview photo and uploads it to Cloud Storage."""
+    client = genai.Client(vertexai=True, project="YOUR_PROJECT_ID", location="us-central1")
+    res = client.models.generate_images(
+        model="imagen-3.0-generate-002",
+        prompt=prompt,
+        config=dict(number_of_images=1, output_mime_type="image/jpeg"),
+    )
+    image_bytes = res.generated_images[0].image.image_bytes
+
+    # Save artifact for ADK Playground
+    if tool_context and hasattr(tool_context, "save_artifact"):
+        tool_context.save_artifact(filename="preview.jpg", artifact=types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
+
+    # Upload to Cloud Storage
+    filename = f"image_{uuid.uuid4().hex[:8]}.jpg"
+    blob = storage.Client(project="YOUR_PROJECT_ID").bucket("YOUR_BUCKET_NAME").blob(filename)
+    blob.upload_from_string(image_bytes, content_type="image/jpeg")
+
+    return f"https://storage.googleapis.com/YOUR_BUCKET_NAME/{filename}"
+```
+
+### Video Generation with Omni (`gemini-omni-flash-preview`)
+Generate video clips using Google's Omni model in region `global` (`app/video_tools.py`):
+
+```python
+def generate_destination_video(prompt: str, tool_context=None) -> str:
+    """Generates a short video clip using gemini-omni-flash-preview in global region."""
+    client = genai.Client(vertexai=True, project="YOUR_PROJECT_ID", location="global")
+    res = client.interactions.create(model="gemini-omni-flash-preview", input=prompt)
+    video_bytes = res.output_video.data
+
+    # Upload bytes to Cloud Storage and return public HTTPS URL
+    filename = f"video_{uuid.uuid4().hex[:8]}.mp4"
+    blob = storage.Client(project="YOUR_PROJECT_ID").bucket("YOUR_BUCKET_NAME").blob(filename)
+    blob.upload_from_string(video_bytes, content_type="video/mp4")
+
+    return f"https://storage.googleapis.com/YOUR_BUCKET_NAME/{filename}"
+```
+
+---
+
+## 7. Run Code in a Sandbox
+
+Enable secure Python code execution on Agent Platform (`app/agent.py`):
+
+```python
+from google.adk.code_executor import AgentEngineSandboxCodeExecutor
+
+code_executor = AgentEngineSandboxCodeExecutor(
+    project="YOUR_PROJECT_ID",
+    location="us-central1",
+    agent_engine_id="YOUR_AGENT_ENGINE_ID",
+)
+```
+
+---
+
+## 8. Cross-Session Memory (Vertex AI Memory Bank)
+
+Enable durable memory storing user facts across conversations:
+
+```python
+from google.adk.memory import VertexAiMemoryBankService
+from google.adk.tools import PreloadMemoryTool
+
+def memory_bank_service_builder():
+    return VertexAiMemoryBankService(
+        project="YOUR_PROJECT_ID",
+        location="us-central1",
+        agent_engine_id="YOUR_AGENT_ENGINE_ID",
+    )
+```
+
+Start local dev UI with memory service connection:
+
+```bash
+uv run adk web . --port 8080 --reload_agents --memory_service_uri=agentengine://YOUR_AGENT_ENGINE_ID
+```
+
+---
+
+## 9. Enrich Responses with A2UI
+
+Wire A2UI v0.8 Schema Manager and `a2ui_callback` in `app/agent.py`:
+
+```python
+from a2ui.basic_catalog.provider import BasicCatalog
+from a2ui.schema.manager import A2uiSchemaManager
+from app.a2ui_utils import a2ui_callback
+
+schema_manager = A2uiSchemaManager(
+    version="0.8",
+    catalogs=[BasicCatalog.get_config("0.8")],
+)
+
+root_agent = Agent(
+    name="root_agent",
+    model=Gemini(model="gemini-flash-latest"),
+    instruction=schema_manager.generate_system_prompt(...),
+    tools=[...],
+    after_model_callback=a2ui_callback,
+)
+```
+
+---
+
+## 10. Build & Deploy Cloud Run Frontend
 
 ### 1. Pin Dependencies (`frontend/requirements.txt`)
-Ensure `a2a-sdk` is pinned to `0.3.26` to avoid breaking changes during container builds:
-
 ```text
 a2a-sdk==0.3.26
 fastapi
@@ -145,55 +237,53 @@ uvicorn
 google-auth
 ```
 
-### 2. FastAPI A2A Proxy Server (`frontend/main.py`)
-The proxy uses Google Application Default Credentials (ADC) to authenticate A2A requests:
+### 2. Redeploy Finished Agent & Grant Service Account Roles
+```bash
+# Redeploy agent to Agent Platform
+agents-cli deploy agent-engine --project YOUR_PROJECT_ID --region us-central1
 
-```python
-import os
-from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-import a2a.client
+# Grant datastore and storage roles to agent runtime service account
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:YOUR_AGENT_RUNTIME_SA@developer.gserviceaccount.com" \
+  --role="roles/datastore.user"
 
-app = FastAPI()
-
-AGENT_ENGINE_RESOURCE_NAME = os.environ.get("AGENT_ENGINE_RESOURCE_NAME")
-AGENT_DIRECTORY = os.environ.get("AGENT_DIRECTORY", "app")
-
-@app.post("/chat")
-async def chat(request: dict):
-    user_message = request.get("message")
-    # Fetch agent card via A2A protocol and send user message
-    # Return { "parts": [{ "kind": "text", "text": "..." }, { "kind": "a2ui", "data": [...] }] }
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:YOUR_AGENT_RUNTIME_SA@developer.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
 ```
 
-### 3. Deploy Frontend to Cloud Run
-Deploy the FastAPI container to Cloud Run with environment variables pointing to your Agent Runtime ID:
-
+### 3. Deploy Frontend to Cloud Run & Grant IAM Access
 ```bash
-gcloud run deploy my-agent-frontend \
+# Grant Cloud Run Compute SA permission to access Reasoning Engine
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:YOUR_PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+# Deploy Cloud Run frontend service
+gcloud run deploy globetrotter-frontend \
   --source ./frontend \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars AGENT_ENGINE_RESOURCE_NAME="projects/YOUR_PROJECT_NUMBER/locations/us-central1/reasoningEngines/YOUR_REASONING_ENGINE_ID",AGENT_DIRECTORY="app"
+  --set-env-vars="AGENT_ENGINE_RESOURCE_NAME=YOUR_REASONING_ENGINE_RESOURCE_NAME,AGENT_DIRECTORY=app"
 ```
 
 ---
 
-## ✅ Step 5: End-to-End Verification
+## 11. Record Demo & Publish to GitHub
 
-### 1. Endpoint HTTP Verification
-Test the deployed Cloud Run service URL using `curl`:
+### Record Browser Demo Video
+Use Playwright to capture a 2-3 turn demo video in WebM format, then convert to an optimized looping GIF:
 
 ```bash
-# Verify chat POST endpoint
-curl -X POST https://<YOUR_CLOUD_RUN_URL>/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Hello, search travel packages for Tokyo"}'
+ffmpeg -i demo.webm -vf "fps=12,scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" docs/demo.gif
 ```
 
-### 2. Live Browser Verification
-Open `https://<YOUR_CLOUD_RUN_URL>` in your browser to verify:
-* **Prompt Chips**: Clickable prompt chips trigger instant queries.
-* **Preferences Modal**: Displays durable memory facts retrieved from Vertex AI Memory Bank.
-* **A2UI Cards**: Interactive cards render cleanly without raw JSON artifacts.
-* **Media & Code Execution**: Generates photos/videos and performs live sandbox calculations.
+### Publish to Personal GitHub Account
+Sign in via GitHub CLI device code flow, commit project files, and push to a public repository:
+
+```bash
+bash .agents/skills/publish-to-github/publish.sh prep
+gh auth login --hostname github.com --git-protocol https --web
+bash .agents/skills/publish-to-github/publish.sh commit
+gh repo create buildwithgemini-globetrotter-travel-concierge --public --source=. --remote=origin --push
+```
